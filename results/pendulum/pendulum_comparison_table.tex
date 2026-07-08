@@ -1,0 +1,16 @@
+\begin{table}[H]
+\centering
+\caption{Inverted pendulum supermartingale certificate: convergence over 5 seeds ($m=200$, max refinement depth~2). Hardcoded IBP bounds sin and the neural policy via interval arithmetic with no auto\_LiRPA. Epoch and wall-clock are mean~$\pm$~std over converged seeds only.}
+\label{tab:pendulum_comparison}
+\begin{tabular}{llll}
+\toprule
+Method & Conv. & Epoch & Wall-clock \\
+\midrule
+Analytical Hessian, IBP & 0/5 & --- & --- \\
+Double Jacobian, IBP & 0/5 & --- & --- \\
+Hardcoded IBP & 1/5 & $3.0k$ & $23$\,s \\
+Double Jacobian, CROWN-IBP & 0/5 & --- & --- \\
+Analytical Hessian, CROWN-IBP & 3/5 & $6.3k \pm 3.5k$ & $53 \pm 28$\,s \\
+\bottomrule
+\end{tabular}
+\end{table}

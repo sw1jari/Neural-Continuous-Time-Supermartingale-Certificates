@@ -39,12 +39,12 @@ class PendulumDrift(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, u: torch.Tensor):
         """forward function of the inverted pendulum drift module"""
-        # split the input x into velocity phi and angle theta
-        phi, theta = torch.split(x, split_size_or_sections=(1, 1), dim=1)
-        # compute the drift components
-        f_phi = self.a1 * torch.sin(theta) + self.a2 * u - self.a3 * phi
+        # use indexing instead of torch.split so auto_LiRPA's IBP can trace
+        # through without hitting the inhomogeneous-eps issue in slice_concat
+        phi   = x[:, 0:1]
+        theta = x[:, 1:2]
+        f_phi   = self.a1 * torch.sin(theta) + self.a2 * u - self.a3 * phi
         f_theta = phi
-        # combine and return
         return torch.cat([f_phi, f_theta], dim=1)
 
 
@@ -59,10 +59,9 @@ class PendulumDiffusion(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, _u: torch.Tensor):
         """forward function of the inverted pendulum diffusion module"""
-        # compute the drift components for velocity phi and angle theta
-        g_phi = torch.full((x.shape[0], 1), self.sigma, device=x.device)
+        # constant diffusion: sigma on velocity, zero on angle
+        g_phi   = torch.full((x.shape[0], 1), self.sigma, device=x.device)
         g_theta = torch.zeros_like(g_phi)
-        # combine and return
         return torch.cat([g_phi, g_theta], dim=1)
 
 

@@ -34,7 +34,7 @@ class AABBSet():
             scale = torch.index_select(
                 self.magnitudes, 0, sets_to_sample
             ).unsqueeze(0)
-            rnd = torch.rand(scale.shape)
+            rnd = torch.rand(scale.shape, device=scale.device)
             return (location + rnd * scale).squeeze(0)
 
     def contains(self, x: torch.Tensor, margin=0.0):

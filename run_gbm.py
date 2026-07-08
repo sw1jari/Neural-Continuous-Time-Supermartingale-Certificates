@@ -55,15 +55,18 @@ for seed in seeds:
 
     # train the certificate
     t = time.time()
-    result = certificate.train(verify_every_n=1000,
-                               verifier_mesh_size=200,
-                               zeta=1.0,
-                               regularizer_lambda=1e-1,
-                               verification_slack=4
-                               )
+    converged, epoch, *_ = certificate.train(
+        n_epochs=20000,
+        verify_every_n=1000,
+        verifier_mesh_size=200,
+        zeta=1.0,
+        regularizer_lambda=1e-1,
+        verification_slack=4,
+        max_depth=2
+    )
     t = time.time() - t
-    result = (seed, t, result[0], result[1])
-    with open('gbm.csv', 'a') as file:
+    result = (seed, t, converged, epoch)
+    with open('results/gbm/gbm.csv', 'a') as file:
         writer = csv.writer(file, dialect='excel')
         writer.writerow(result)
 

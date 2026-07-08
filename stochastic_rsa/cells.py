@@ -13,7 +13,8 @@ class CellVerificationSystem():
             verifier: BoundedModule,
             locations: torch.Tensor,
             magnitude: torch.Tensor,
-            depth: int = 0
+            depth: int = 0,
+            bound_method: str = 'IBP',
     ):
         bounded_cells = BoundedTensor(
             locations,
@@ -25,7 +26,7 @@ class CellVerificationSystem():
         _, ub = verifier.compute_bounds(
             bounded_cells,
             bound_lower=False,
-            method="IBP"
+            method=bound_method,
         )
         mask = ub.squeeze() >= 0.0
         counterexamples = locations[mask]
@@ -36,14 +37,11 @@ class CellVerificationSystem():
                 "cells. Splitting further"
             )
             if depth < self.max_depth:
-                new_cells = torch.empty((0, locations.shape[1]))
                 half_m = 0.5 * magnitude
-                for _, loc in enumerate(counterexamples):
-                    new_cells = torch.cat(
-                        (new_cells, loc + half_m * self.corners),
-                        dim=0
-                    )
+                corners = self.corners.to(locations.device)
+                new_cells = (counterexamples.unsqueeze(1) + half_m * corners.unsqueeze(0)).reshape(-1, locations.shape[1])
                 counterexamples = self.verify(
-                    verifier, new_cells, half_m, depth+1
+                    verifier, new_cells, half_m, depth+1,
+                    bound_method=bound_method,
                 )
         return counterexamples

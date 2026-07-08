@@ -1,0 +1,16 @@
+\begin{table}[H]
+\centering
+\caption{GBM supermartingale certificate: convergence over 5 seeds ($m=200$, max refinement depth~2). Epoch and wall-clock are mean~$\pm$~std over converged seeds only.}
+\label{tab:gbm_comparison}
+\begin{tabular}{llll}
+\toprule
+Method & Conv. & Epoch & Wall-clock \\
+\midrule
+Analytical Hessian, IBP & 0/5 & --- & --- \\
+Double Jacobian, IBP & 5/10 & $15.2k \pm 1.9k$ & $188 \pm 27$\,s \\
+MLP-IBP (no auto_LiRPA) & 9/10 & $12.2k \pm 2.6k$ & $154 \pm 34$\,s \\
+Double Jacobian, CROWN-IBP & 10/10 & $9.3k \pm 2.5k$ & $181 \pm 122$\,s \\
+Analytical Hessian, CROWN-IBP & 4/4 & $11.2k \pm 5.3k$ & $324 \pm 152$\,s \\
+\bottomrule
+\end{tabular}
+\end{table}

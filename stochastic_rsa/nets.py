@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from controlled_sde import ControlledSDE
+from auto_LiRPA.jacobian import JacobianOP
+from auto_LiRPA.operators.hessian import DirectHessianOP, DoubleJacobianOP
 
 
 class CertificateModule(torch.nn.Sequential):
@@ -159,7 +161,46 @@ class GeneratorModule(torch.nn.Module):
         _, jacobian, hessian = self.certificate(x)
         dv_dx = jacobian.squeeze(1)
         d2v_dx2 = torch.cat(
-            (hessian[:, 0, 0].unsqueeze(0), hessian[:, 1, 1].unsqueeze(0)),
-            dim=0
-        ).T  # extract the diagonal; tried torch.diagonal, LiRPA complains
+            (hessian[:, 0, 0:1], hessian[:, 1, 1:2]),
+            dim=1
+        )  # extract the diagonal; tried torch.diagonal, LiRPA complains
         return (f * dv_dx + 0.5 * torch.square(g) * d2v_dx2).sum(dim=1)
+
+
+class VerificationGeneratorModule(torch.nn.Module):
+    """Computes the SDE's infinitesimal generator LV for verification.
+
+    Uses JacobianOP and DirectHessianOP so that BoundedModule can propagate
+    CROWN and alpha-CROWN bounds through the Jacobian and Hessian, giving
+    tighter decrease-condition certificates than IBP through the analytical
+    formula.
+    """
+
+    def __init__(
+        self,
+        net: CertificateModule,
+        sde: ControlledSDE,
+        hessian_op: str = 'double'
+    ):
+        super().__init__()
+        self.policy = sde.policy
+        self.drift = sde.drift
+        self.diffusion = sde.diffusion
+        self.net = net
+        self.hessian_op = hessian_op
+
+    def forward(self, x: torch.Tensor):
+        u = self.policy(x)
+        f = self.drift(x, u)
+        g = self.diffusion(x, u)
+        value = self.net(x)
+        jacobian = JacobianOP.apply(value, x)          # [batch, 1, n_dim]
+        if self.hessian_op == 'direct':
+            hessian = DirectHessianOP.apply(value, x)  # [batch, 1, n_dim, n_dim]
+        else:
+            hessian = DoubleJacobianOP.apply(value, x)
+        dv_dx = jacobian[:, 0, :]                      # [batch, n_dim]
+        d2v_dx2 = torch.stack(
+            [hessian[:, 0, i, i] for i in range(x.shape[1])], dim=1
+        )                                              # [batch, n_dim], Hessian diagonal
+        return (f * dv_dx + 0.5 * torch.square(g) * d2v_dx2).sum(dim=1, keepdim=True)

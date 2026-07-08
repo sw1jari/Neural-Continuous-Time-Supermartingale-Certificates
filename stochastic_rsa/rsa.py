@@ -1,12 +1,16 @@
 from typing import Sequence
+import time
 import torch
 import tqdm
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 from controlled_sde import ControlledSDE
 from .specification import Specification
-from .nets import CertificateModule, GeneratorModule, CertificateModuleWithDerivatives
+from .nets import (CertificateModule, GeneratorModule,
+                   CertificateModuleWithDerivatives, VerificationGeneratorModule)
 from .cells import CellVerificationSystem
+from .hardcoded_ibp import (GBMHardcodedIBPVerifier, HardcodedCellVerificationSystem,
+                            PendulumHardcodedIBPVerifier)
 
 
 def lerp(x1: float, x2: float, rate: float):
@@ -39,22 +43,22 @@ class SupermartingaleCertificate():
             self.sde
         )
 
+        self.verification_generator = VerificationGeneratorModule(
+            self.net,
+            self.sde
+        )
+
         # Create the verification modules
-        dummy_x = torch.empty(
+        self.dummy_x = torch.empty(
             (1, self.n_dimensions),
             dtype=torch.float32,
             device=self.device
         )  # this is required for initialization
         self.level_verifier = BoundedModule(
             self.net,
-            (dummy_x,),
+            (self.dummy_x,),
             device=self.device
-        )  # this module give bounds on the certificate values
-        self.decrease_verifier = BoundedModule(
-            self.generator,
-            (dummy_x,),
-            device=self.device
-        )  # and this one on the infinitesimal generator values
+        )
 
     def train(self,
               n_epochs: int = 1_000_000,
@@ -65,7 +69,13 @@ class SupermartingaleCertificate():
               verification_slack: float = 2.0,
               regularizer_lambda: float = 1e-3,
               verifier_mesh_size: int = 400,
-              max_depth: int = 4
+              max_depth: int = 4,
+              bound_method: str = 'IBP',
+              use_jacobian_verifier: bool = False,
+              use_hardcoded_ibp: bool = False,
+              use_pendulum_hardcoded_ibp: bool = False,
+              time_limit_s: float = None,
+              checkpoint_callback=None,
               ):
         # extract the specification information and other useful data
         global_set = self.specification.interest_set
@@ -81,6 +91,33 @@ class SupermartingaleCertificate():
         certificate = self.net   # this is V(t, x) in the paper
         certificate.train(True)  # make sure it's in training mode
         optimizer = torch.optim.Adam(self.net.parameters(), lr=lr)
+
+        # build verifiers once before training starts; train_start is set here
+        # so that compilation time is included in the wall_s timestamps and
+        # can be subtracted out later for the "without compilation" baseline
+        train_start = time.time()
+        violation_history = []
+        verifier_module = (
+            self.verification_generator if use_jacobian_verifier
+            else self.generator
+        )
+        if use_hardcoded_ibp:
+            hardcoded_verifier = GBMHardcodedIBPVerifier(self.net)
+            hardcoded_cell_system = HardcodedCellVerificationSystem(max_depth)
+            compile_s = 0.0
+        elif use_pendulum_hardcoded_ibp:
+            hardcoded_verifier = PendulumHardcodedIBPVerifier(
+                self.net, self.sde.policy)
+            hardcoded_cell_system = HardcodedCellVerificationSystem(max_depth)
+            compile_s = 0.0
+        else:
+            _t0 = time.time()
+            decrease_verifier = BoundedModule(
+                verifier_module,
+                (self.dummy_x,),
+                device=self.device,
+            )
+            compile_s = time.time() - _t0
 
         # initialize the levels (step 1 in the paper)
         alpha_ra = 1.0
@@ -106,6 +143,8 @@ class SupermartingaleCertificate():
              torch.reshape(cells[1][1:, 1:], (-1,)).unsqueeze(1)),
             dim=1
         )  # upper cell bounds
+        x_L = x_L.to(self.device)
+        x_U = x_U.to(self.device)
         cells = BoundedTensor(
             0.5 * (x_L + x_U),
             PerturbationLpNorm(x_L=x_L, x_U=x_U)
@@ -172,6 +211,10 @@ class SupermartingaleCertificate():
             torch.nn.utils.clip_grad_norm_(certificate.parameters(), 1.0)
             loss.backward()
             optimizer.step()
+
+            # stop early if a wall-clock limit was given
+            if time_limit_s is not None and time.time() - train_start > time_limit_s:
+                break
 
             # verify (step 7 of the algorithm)
             if (epoch + 1) % verify_every_n == 0 or epoch + 1 == n_epochs:
@@ -251,12 +294,20 @@ class SupermartingaleCertificate():
                 if torch.numel(decrease_cells) > 0:
 
                     # These are steps 11-18 put into a separate function
-                    cell_system = CellVerificationSystem(max_depth)
-                    decrease_counterexamples = cell_system.verify(
-                        self.decrease_verifier,
-                        decrease_cells,
-                        cell_magnitudes
-                    )
+                    if use_hardcoded_ibp or use_pendulum_hardcoded_ibp:
+                        decrease_counterexamples = hardcoded_cell_system.verify(
+                            hardcoded_verifier,
+                            decrease_cells,
+                            cell_magnitudes,
+                        )
+                    else:
+                        cell_system = CellVerificationSystem(max_depth)
+                        decrease_counterexamples = cell_system.verify(
+                            decrease_verifier,
+                            decrease_cells,
+                            cell_magnitudes,
+                            bound_method=bound_method,
+                        )
                     n_decrease_counterexamples = decrease_counterexamples.shape[0]
                     if n_decrease_counterexamples > 0:
                         print(
@@ -266,9 +317,15 @@ class SupermartingaleCertificate():
                 else:
                     n_decrease_counterexamples = 0
 
+                entry = (epoch + 1, n_decrease_counterexamples,
+                         time.time() - train_start)
+                violation_history.append(entry)
+                if checkpoint_callback is not None:
+                    checkpoint_callback(*entry)
+
                 # Steps 19-20 of the algorithm
                 if n_decrease_counterexamples == 0:
-                    return True, epoch
+                    return True, epoch, violation_history, compile_s
 
         # Step 21 of the algorithm
-        return False, n_epochs
+        return False, n_epochs, violation_history, compile_s
